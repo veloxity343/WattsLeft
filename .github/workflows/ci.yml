@@ -40,7 +40,7 @@ jobs:
         run: dotnet build WattsLeft.sln -c Release -p:Version=${{ steps.version.outputs.version }}
 
       # One native executable, with .NET compiled in: nothing to install. Avalonia's drawing libraries (Skia,
-      # HarfBuzz, ANGLE) are native DLLs that sit beside it.
+      # HarfBuzz) are native DLLs that sit beside it.
       - name: Publish
         run: >
           dotnet publish "$PROJECT" -c Release -r win-x64 -o out/app

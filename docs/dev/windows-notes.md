@@ -58,6 +58,7 @@ Documented APIs that don't behave as you'd expect.
 
 - **`Shutdown()` doesn't raise `ShutdownRequested`.** That event is only for Windows ending the session. Clean-up hangs off the lifetime's `Exit` event, which every way of exiting raises (`App.cs`).
 - **Start-up work is posted to the dispatcher**, so it runs once the message loop is going and can end the app itself, as the design aids do.
+- **Drawing is on the CPU** (`Win32RenderingMode.Software`, in `Program.Run`). Avalonia's default is the GPU through ANGLE and Direct3D, which loads the graphics driver into the process: for a tray app with a few small windows that cost about 50 MB of memory and 17 threads, and looked no different. The ANGLE library (`av_libglesv2.dll`) is left out of the build (`LeaveOutGpuLibrary` in `WattsLeft.csproj`).
 - **The tray icons don't use Avalonia's `TrayIcon`.** `Platform/Windows/NotifyIcons.cs` calls `Shell_NotifyIcon` directly, for one icon per device with stable ids, the click position to open the panel at, and Explorer restarts.
 - **The interface is drawn in code**, with no XAML: custom controls derive from `ThemedControl` and `ThemedPanel`. `ThemedPanel` derives from `Control`, not `Panel`, because `Panel.Render` is sealed.
 - **Pop-ups close on any click outside them** through a low-level mouse hook while one is open, since a window opened from the tray may never get focus, and so never lose it.

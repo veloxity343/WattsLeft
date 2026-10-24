@@ -73,7 +73,7 @@ The Windows details the sources rely on, and the quirks they work around, are in
 - **Health excludes charging time and charge cycles.** It compares runtime per charge with the device's own first week, and needs three weeks of history.
 - **Parsed history is cached,** and later loads read only the rows appended since. The file only grows between startups.
 - **Logs are capped at startup:** `battery.csv` at 90 days, `history.log` at 30 days, `error.log` at 1 MB.
-- **No network access, apart from updates** if the user turns them on: one HTTPS request a day to GitHub's `/releases/latest`, reading only the address it redirects to (`UpdateCheck.cs`); and, when the user confirms an update, the new release's zip, checked against the `.sha256` file CI publishes beside it before it's installed (`UpdateInstall.cs`). The new version installs itself, run with `--finish-update`, once the old one has closed. Nothing else runs that isn't needed: idle cost is one ~15 ms check every 30 seconds.
+- **No network access, apart from updates** if the user turns them on: one HTTPS request a day to GitHub's `/releases/latest`, reading only the address it redirects to (`UpdateCheck.cs`); and, when the user confirms an update, the new release's zip, checked against the `.sha256` file CI publishes beside it before it's installed (`UpdateInstall.cs`). The new version installs itself, run with `--finish-update`, once the old one has closed. Nothing else runs that isn't needed: idle cost is one ~15 ms check every 30 seconds, about 0.1 s of CPU a minute in all, and around 15 MB of private memory, since drawing is on the CPU and no graphics driver is loaded.
 
 ---
 

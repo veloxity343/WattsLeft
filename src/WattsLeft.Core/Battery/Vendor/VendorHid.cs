@@ -209,6 +209,8 @@ internal sealed class VendorDevice(VendorProtocol protocol, string group)
     public ControllerBattery? Reading;
     public DateTime LastAnswer;
     public int SilentPolls, Skipped;
+    /// <summary>Until when it's asked at every quick poll: just after it appeared, while it may still be connecting.</summary>
+    public DateTime SettleUntil;
 
     /// <summary>Its collections, those on the cable first: a device being charged says so there.</summary>
     public IEnumerable<(HidCollection Collection, VendorModel Model)> ByPreference =>
@@ -248,7 +250,9 @@ internal abstract class VendorProtocol
 /// <summary>
 /// Reads devices through their makers' own HID protocols (<see cref="VendorProtocol"/>), for those whose
 /// battery Windows doesn't record: devices on their own USB receivers, mostly. It watches HID collections
-/// of the vendors the protocols know, groups them into devices, and asks each every 30 seconds.
+/// of the vendors the protocols know, groups them into devices, and asks each every 30 seconds, and also
+/// straight away whenever a device notice comes (something connected or went), every 2 seconds for a while
+/// after a device appears, so a receiver's device shows as soon as it answers.
 /// </summary>
 public sealed class VendorHidSource : IBatterySource, IDisposable
 {
@@ -259,6 +263,15 @@ public sealed class VendorHidSource : IBatterySource, IDisposable
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
     /// <summary>A device with nothing to show is asked a few times at the full rate, then every so many polls.</summary>
     private const int TriesAtFullRate = 3, SilentPollEvery = 5;
+    /// <summary>
+    /// A receiver appears before the device behind it has connected to it, so a new device is asked every
+    /// <see cref="SettlingInterval"/> for this long, rather than waiting for the next poll.
+    /// </summary>
+    private static readonly TimeSpan SettlingTime = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan SettlingInterval = TimeSpan.FromSeconds(2);
+    /// <summary>Released to poll now rather than at the next interval.</summary>
+    private readonly SemaphoreSlim _wake = new(0);
+    private readonly IDisposable _notices;
 
     private readonly IReadOnlyList<VendorProtocol> _protocols;
     private readonly Dictionary<string, VendorDevice> _devices = [];
@@ -272,6 +285,8 @@ public sealed class VendorHidSource : IBatterySource, IDisposable
         _protocols = protocols;
         var vendors = protocols.SelectMany(p => p.Vendors).ToHashSet();
         _watch = HidMonitor.Watch(info => vendors.Contains(info.Vendor), OnAdded, OnRemoved, out _listed);
+        // A device connecting to its receiver, or switching on, often brings interfaces with it: ask then.
+        _notices = DeviceNotices.Watch(Wake);
         _ = Task.Run(() => PollLoopAsync(_stop.Token));
     }
 
@@ -308,9 +323,12 @@ public sealed class VendorHidSource : IBatterySource, IDisposable
                 if (!_devices.TryGetValue(key, out var device))
                     _devices[key] = device = new VendorDevice(protocol, model.Group);
                 device.Collections[info.Path] = (collection, model);
-                // A cable appearing (charging) or a receiver plugged in is worth asking about straight away.
+                // A cable appearing (charging) or a receiver plugged in is worth asking about straight away,
+                // and again shortly, while the device behind it connects.
                 device.Skipped = SilentPollEvery;
+                device.SettleUntil = DateTime.UtcNow + SettlingTime;
             }
+            Wake();
             return;
         }
     }
@@ -333,6 +351,12 @@ public sealed class VendorHidSource : IBatterySource, IDisposable
             ControllersChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    private void Wake()
+    {
+        if (_wake.CurrentCount == 0)
+            _wake.Release();
+    }
+
     private async Task PollLoopAsync(CancellationToken token)
     {
         try
@@ -350,13 +374,30 @@ public sealed class VendorHidSource : IBatterySource, IDisposable
             VendorDevice[] devices;
             lock (_devices)
                 devices = [.. _devices.Values];
-            // Each device on its own, so a slow one doesn't hold up the rest.
-            bool[] changed = await Task.WhenAll(devices.Select(d => PollAsync(d, force: false, token)));
-            if (changed.Any(c => c))
-                ControllersChanged?.Invoke(this, EventArgs.Empty);
+            var now = DateTime.UtcNow;
+            // Each device on its own, so a slow one doesn't hold up the rest, and each change passed on as soon
+            // as it's read. One still settling is always asked.
             try
             {
-                await Task.Delay(PollInterval, token);
+                await Task.WhenAll(devices.Select(async d =>
+                {
+                    if (await PollAsync(d, force: d.SettleUntil > now, token))
+                        ControllersChanged?.Invoke(this, EventArgs.Empty);
+                }));
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+
+            bool settling;
+            lock (_devices)
+                settling = _devices.Values.Any(d => d.SettleUntil > DateTime.UtcNow);
+            try
+            {
+                await _wake.WaitAsync(settling ? SettlingInterval : PollInterval, token);
+                while (_wake.CurrentCount > 0)
+                    _wake.Wait(0); // one poll answers any number of notices
             }
             catch (OperationCanceledException)
             {
@@ -425,6 +466,7 @@ public sealed class VendorHidSource : IBatterySource, IDisposable
     public void Dispose()
     {
         _stop.Cancel();
+        _notices.Dispose();
         _watch.Dispose();
     }
 }

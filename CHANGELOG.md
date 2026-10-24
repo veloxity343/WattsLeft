@@ -11,9 +11,13 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 
 ## [Unreleased]
 
+### Changed
+
+- **Uses far less memory:** about 15 MB instead of 65, with half the threads, by drawing on the CPU rather than the graphics card. It looks the same, and WattsLeft no longer touches the graphics card at all, which suits running alongside games. The download is smaller too.
+
 ### Fixed
 
-- Logitech devices show up as soon as they connect to their receiver, after plugging the receiver back in or switching the device on, instead of up to 30 seconds later. They also leave the tray straight away when unplugged or switched off.
+- Logitech devices show up as soon as they connect to their receiver, after plugging the receiver back in or switching the device on, instead of up to 30 seconds later. They also leave the tray straight away when unplugged or switched off. Devices on other makers' receivers are asked straight away when something connects too, and every 2 seconds for a while after their receiver is plugged in.
 
 ## [0.6.0] - 2026-10-24
 

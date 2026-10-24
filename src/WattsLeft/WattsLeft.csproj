@@ -42,6 +42,15 @@
     <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.4" />
   </ItemGroup>
 
+  <!-- WattsLeft draws on the CPU (see Program.Run), so Avalonia's GPU library is never loaded: leave it out of
+       the build and the release. -->
+  <Target Name="LeaveOutGpuLibrary" AfterTargets="ResolvePackageAssets">
+    <ItemGroup>
+      <NativeCopyLocalItems Remove="@(NativeCopyLocalItems)" Condition="'%(Filename)' == 'av_libglesv2'" />
+      <RuntimeTargetsCopyLocalItems Remove="@(RuntimeTargetsCopyLocalItems)" Condition="'%(Filename)' == 'av_libglesv2'" />
+    </ItemGroup>
+  </Target>
+
   <PropertyGroup>
     <Version>0.6.0</Version>
     <Product>WattsLeft</Product>

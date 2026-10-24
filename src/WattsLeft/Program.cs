@@ -65,8 +65,14 @@ internal static partial class Program
         return Run(args);
     }
 
+    /// <summary>
+    /// Runs Avalonia, drawing on the CPU: for a tray app's few small windows it looks the same, and it keeps the
+    /// GPU, and its driver's tens of megabytes, out of an app that runs all day alongside games.
+    /// </summary>
     private static int Run(string[] args) =>
-        AppBuilder.Configure<App>().UsePlatformDetect().StartWithClassicDesktopLifetime(args, Avalonia.Controls.ShutdownMode.OnExplicitShutdown);
+        AppBuilder.Configure<App>().UsePlatformDetect()
+            .With(new Win32PlatformOptions { RenderingMode = [Win32RenderingMode.Software] })
+            .StartWithClassicDesktopLifetime(args, Avalonia.Controls.ShutdownMode.OnExplicitShutdown);
 
     /// <summary>
     /// Runs a design aid, then exits. A failure is printed and ends it with exit code 1, for CI to catch, instead
