@@ -141,15 +141,5 @@ internal static class Updates
     }
 
     /// <summary>Opens a release's page in the browser. The address is always one WattsLeft built itself.</summary>
-    public static void OpenPage(UpdateInfo update)
-    {
-        try
-        {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(update.Url) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            Log.Write($"Opening {update.Url} failed: {ex.Message}");
-        }
-    }
+    public static void OpenPage(UpdateInfo update) => Platform.Windows.Win32.Open(update.Url);
 }

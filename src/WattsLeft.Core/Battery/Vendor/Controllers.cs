@@ -90,43 +90,22 @@ internal sealed class SteamPuck : VendorProtocol
             .GroupBy(c => c.Interface)
             .Select(g => g.OrderBy(c => c.UsagePage == 0xFF00 && c.Usage == 0x0001 ? 0 : c.UsagePage >= 0xFF00 ? 1 :
                 c.UsagePage == 0x0001 && c.Usage == 0x0005 ? 2 : 3).First());
+        foreach (var slot in slots)
+        {
+            string heard = $"heard {slot.Path}";
+            ReportListener.Ensure(device, $"listener {slot.Path}", slot, r => r.Length > 2 && r[0] is 0x43 or 0x79 or 0x46, r =>
+            {
+                if (r[0] == 0x43 && r[2] <= 100)
+                    device.Memo[heard] = new VendorReading(r[2], r[1] == 2 ? ChargeState.Charging : ChargeState.Discharging);
+                else if (r[0] is 0x79 or 0x46 && r[1] == 1)
+                    device.Memo.Remove(heard); // disconnected
+            }, token);
+        }
         lock (device.Memo)
         {
-            foreach (var slot in slots)
-            {
-                string key = $"listener {slot.Path}";
-                if (device.Memo.GetValueOrDefault(key) is not Task { IsCompleted: false })
-                    device.Memo[key] = Task.Run(() => ListenAsync(device, slot, token), token);
-            }
             // The lowest level of the controllers heard, if more than one is paired.
             var heard = device.Memo.Where(kv => kv.Key.StartsWith("heard ")).Select(kv => kv.Value).OfType<VendorReading>();
             return Task.FromResult(heard.OrderBy(r => r.Percent).FirstOrDefault());
-        }
-    }
-
-    private static async Task ListenAsync(VendorDevice device, HidCollection slot, CancellationToken token)
-    {
-        using var link = HidLink.Open(slot);
-        if (link is null)
-            return;
-        string key = $"heard {slot.Path}";
-        while (!token.IsCancellationRequested)
-        {
-            var started = DateTime.UtcNow;
-            var r = await link.ReadAsync(r => r.Length > 2 && r[0] is 0x43 or 0x79 or 0x46, TimeSpan.FromMinutes(5), token);
-            if (r is null)
-            {
-                if (DateTime.UtcNow - started < TimeSpan.FromSeconds(1))
-                    return; // the read failed at once: the puck went away
-                continue;
-            }
-            lock (device.Memo)
-            {
-                if (r[0] == 0x43 && r[2] <= 100)
-                    device.Memo[key] = new VendorReading(r[2], r[1] == 2 ? ChargeState.Charging : ChargeState.Discharging);
-                else if (r[0] is 0x79 or 0x46 && r[1] == 1)
-                    device.Memo.Remove(key); // disconnected
-            }
         }
     }
 }

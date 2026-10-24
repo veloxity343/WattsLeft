@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 using Microsoft.Win32.SafeHandles;
 
 namespace WattsLeft.Battery;
@@ -18,40 +17,11 @@ internal static unsafe partial class BluetoothLeBattery
     internal static readonly DevPropKey BatteryKey = DevPropKey.Parse("{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2");
     internal static readonly DevPropKey ConnectedKey = DevPropKey.Parse("{83DA6326-97A6-4088-9453-A1923F573B29} 15");
 
-    /// <summary>The device node, e.g. BTHLE\DEV_70F8AE8F7583\..., which carries battery and connection state.</summary>
-    [GeneratedRegex(@"^BTHLE\\DEV_([0-9A-F]{12})\\", RegexOptions.IgnoreCase)]
-    private static partial Regex DeviceNodeId();
-
-    /// <summary>Its GATT service children, e.g. BTHLEDEVICE\{...}_DEV_VID&amp;02045E_PID&amp;0B13_REV&amp;0509_70F8AE8F7583\..., which carry VID/PID.</summary>
-    [GeneratedRegex(@"_DEV_VID&02([0-9A-F]{4})_PID&([0-9A-F]{4})_REV&[0-9A-F]{4}_([0-9A-F]{12})\\", RegexOptions.IgnoreCase)]
-    private static partial Regex ServiceNodeId();
-
-    public static List<BleBattery> QueryConnected()
-    {
-        var hardwareByAddress = new Dictionary<string, (ushort Vid, ushort Pid)>(StringComparer.OrdinalIgnoreCase);
-        foreach (var service in FindDevices(@"BTHLEDEVICE\", []))
-        {
-            var match = ServiceNodeId().Match(InstanceId(service));
-            if (match.Success)
-                hardwareByAddress[match.Groups[3].Value] = (ParseHex(match.Groups[1].Value), ParseHex(match.Groups[2].Value));
-        }
-
-        var batteries = new List<BleBattery>();
-        foreach (var device in FindDevices(@"BTHLE\DEV_", [BatteryKey, ConnectedKey]))
-        {
-            var match = DeviceNodeId().Match(InstanceId(device));
-            if (!match.Success || !hardwareByAddress.TryGetValue(match.Groups[1].Value, out var hw))
-                continue;
-            if (device[ConnectedKey] is not true)
-                continue;
-            if (device[BatteryKey] is not IConvertible battery)
-                continue;
-
-            batteries.Add(new BleBattery(match.Groups[1].Value, device.Name, hw.Vid, hw.Pid,
-                Math.Clamp(battery.ToInt32(null), 0, 100)));
-        }
-        return batteries;
-    }
+    /// <summary>The connected Bluetooth LE devices with a battery level and a known maker and model.</summary>
+    public static List<BleBattery> QueryConnected() =>
+        [.. BluetoothDevices.List()
+            .Where(d => d.LowEnergy && d.Connected == true && d.VendorId is not null)
+            .Select(d => new BleBattery(d.Address, d.Name, d.VendorId!.Value, d.ProductId ?? 0, d.Percent))];
 
     /// <summary>Every property in the Bluetooth battery property set, for the --list diagnostic.</summary>
     public static IEnumerable<string> DescribeRawProperties(string instanceIdPrefix = @"BTHLE\DEV_")
@@ -73,8 +43,6 @@ internal static unsafe partial class BluetoothLeBattery
         DeviceQuery.Find(DeviceQuery.ObjectType.Device, [property], new DeviceQuery.Filter(DeviceQuery.ContainerId, EqualsGuid: container));
 
     internal static string InstanceId(DeviceObject device) => device[DeviceQuery.InstanceId] as string ?? device.Id;
-
-    private static ushort ParseHex(string hex) => Convert.ToUInt16(hex, 16);
 
     // Reading straight from the device, through Windows' Bluetooth GATT API: diagnostics only.
 
@@ -152,11 +120,8 @@ internal static unsafe partial class BluetoothLeBattery
             .Select(i => i.Id)
             .FirstOrDefault(p => p.Contains(address, StringComparison.OrdinalIgnoreCase));
 
-    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-    private static partial SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
-
     private static SafeFileHandle OpenGatt(string path) =>
-        CreateFile(path, Hid.GenericRead | Hid.GenericWrite, 3 /* share read and write */, IntPtr.Zero, 3 /* open existing */, 0, IntPtr.Zero);
+        DeviceFile.Open(path, DeviceFile.GenericRead | DeviceFile.GenericWrite, overlapped: false);
 
     private const uint FlagNone = 0, FlagForceReadFromDevice = 4;
 

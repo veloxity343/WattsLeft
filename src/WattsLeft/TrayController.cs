@@ -35,6 +35,11 @@ internal sealed class TrayController : IDisposable
     private DateTime? _eventPendingSince;
     private readonly DispatcherTimer _settleTimer = new() { Interval = ControllerNotifier.SettleTime + TimeSpan.FromMilliseconds(100) };
     private readonly ControllerNotifier _notifier = new();
+    /// <summary>
+    /// Something connected or went: every source is read again then, not just at the next poll. Sources that
+    /// have to ask their devices also poll on these themselves (<see cref="PollSchedule"/>).
+    /// </summary>
+    private readonly IDisposable _deviceNotices;
     private readonly BatteryHistory _history = new();
     /// <summary>Every device connected, removed ones included: history keeps recording them.</summary>
     private IReadOnlyList<ControllerBattery> _connected = [];
@@ -69,6 +74,7 @@ internal sealed class TrayController : IDisposable
 
         foreach (var source in _sources)
             source.ControllersChanged += OnControllersChanged;
+        _deviceNotices = DeviceNotices.Watch(() => OnControllersChanged(null, EventArgs.Empty));
 
         _eventTimer.Tick += (_, _) => RefreshForEvents();
         // Re-check once a newly connected device has settled, so its toast shows the settled reading.
@@ -285,7 +291,7 @@ internal sealed class TrayController : IDisposable
         try
         {
             string path = await Task.Run(() => Diagnostics.WriteReport(_sources));
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            Win32.Open(path);
         }
         catch (Exception ex)
         {
@@ -510,6 +516,7 @@ internal sealed class TrayController : IDisposable
     public void Dispose()
     {
         _poll.Stop();
+        _deviceNotices.Dispose();
         Updates.Stop();
         _eventTimer.Stop();
         _settleTimer.Stop();

@@ -11,8 +11,10 @@ public sealed class GamingInputSource : IBatterySource, IDisposable
 
     public event EventHandler? ControllersChanged;
 
-    private readonly IDisposable? _bluetoothWatcher, _padWatcher;
+    private readonly IDisposable? _padWatcher;
     private readonly ChargeTrends _trends = new();
+    /// <summary>Held while reading: the tray and the diagnostics report can read at once, and both update the trends.</summary>
+    private readonly object _readGate = new();
 
     public GamingInputSource()
     {
@@ -26,11 +28,15 @@ public sealed class GamingInputSource : IBatterySource, IDisposable
             Log.Once($"Windows.Gaming.Input watch failed: {ex.GetType().Name}: {ex.Message}");
         }
 
-        // A Bluetooth pad connecting or disconnecting: look again then, not just at the next poll.
-        _bluetoothWatcher = DeviceNotices.Watch(() => ControllersChanged?.Invoke(this, EventArgs.Empty));
     }
 
     public IReadOnlyList<ControllerBattery> Read()
+    {
+        lock (_readGate)
+            return ReadLocked();
+    }
+
+    private List<ControllerBattery> ReadLocked()
     {
         var pads = Pads();
         var bluetooth = QueryBluetoothBatteries().Where(IsXboxController).ToList();
@@ -187,6 +193,5 @@ public sealed class GamingInputSource : IBatterySource, IDisposable
     public void Dispose()
     {
         _padWatcher?.Dispose();
-        _bluetoothWatcher?.Dispose();
     }
 }

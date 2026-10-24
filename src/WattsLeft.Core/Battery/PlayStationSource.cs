@@ -29,11 +29,10 @@ public sealed class PlayStationSource : IBatterySource, IDisposable
 
     public static IEnumerable<ushort> ProductIds => Models.Keys;
 
+    /// <summary>How often a controller is sampled: a report is read every this often.</summary>
     private static readonly TimeSpan SampleInterval = TimeSpan.FromSeconds(5);
     /// <summary>Full reports stream continuously, so a read this slow means no battery data is coming.</summary>
     private static readonly TimeSpan ReadTimeout = TimeSpan.FromSeconds(2);
-    /// <summary>Before reopening after a failure, e.g. while another app holds the controller exclusively.</summary>
-    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(10);
 
     private const int UsbReportLength = 64;
 
@@ -42,11 +41,13 @@ public sealed class PlayStationSource : IBatterySource, IDisposable
 
     private sealed record Status(int? Percent, ChargeState Power);
 
-    private sealed class Controller(string id, ushort productId)
+    private sealed class Controller(HidCollection collection)
     {
-        public readonly string Id = id;
-        public readonly ushort ProductId = productId;
-        public readonly CancellationTokenSource Stop = new();
+        public readonly HidCollection Collection = collection;
+        public string Id => Collection.Path;
+        public ushort ProductId => Collection.Product;
+        /// <summary>When it's sampled; made once it's known.</summary>
+        public PollSchedule? Schedule;
         /// <summary>null until the first report arrives.</summary>
         public volatile Status? Latest;
         /// <summary>Whether the calibration read that turns on the full Bluetooth report has succeeded.</summary>
@@ -85,13 +86,16 @@ public sealed class PlayStationSource : IBatterySource, IDisposable
 
     private void OnAdded(HidInfo device)
     {
-        var controller = new Controller(device.Path, device.Product);
+        var controller = new Controller(new HidCollection(device));
         lock (_controllers)
         {
             if (!_controllers.TryAdd(device.Path, controller))
                 return;
+            // Made under the lock, so a controller removed straight away has its schedule stopped too. Its
+            // reports stream on their own, so device notices add nothing.
+            controller.Schedule = new PollSchedule(Models[controller.ProductId].Name, (_, token) => SampleAsync(controller, token),
+                interval: SampleInterval, onDeviceNotices: false);
         }
-        _ = Task.Run(() => WatchAsync(controller));
         ControllersChanged?.Invoke(this, EventArgs.Empty);
     }
 
@@ -103,81 +107,35 @@ public sealed class PlayStationSource : IBatterySource, IDisposable
             if (!_controllers.Remove(id, out controller))
                 return;
         }
-        controller.Stop.Cancel();
+        controller.Schedule?.Dispose();
         ControllersChanged?.Invoke(this, EventArgs.Empty);
-    }
-
-    private async Task WatchAsync(Controller controller)
-    {
-        var token = controller.Stop.Token;
-        while (!token.IsCancellationRequested)
-        {
-            var delay = SampleInterval;
-            try
-            {
-                var status = await SampleAsync(controller, token);
-                if (status != controller.Latest)
-                {
-                    controller.Latest = status;
-                    ControllersChanged?.Invoke(this, EventArgs.Empty);
-                }
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                return;
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"{Models[controller.ProductId].Name}: {ex.Message}");
-                delay = RetryDelay;
-            }
-
-            try
-            {
-                await Task.Delay(delay, token);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-        }
     }
 
     /// <summary>
     /// Opens the controller just long enough to read one report, so tools that want it exclusively
-    /// (DS4Windows, HidHide) aren't blocked by a handle held open.
+    /// (DS4Windows, HidHide) aren't blocked by a handle held open, and passes on any change.
     /// </summary>
-    private static async Task<Status> SampleAsync(Controller controller, CancellationToken token)
+    private async Task SampleAsync(Controller controller, CancellationToken token)
     {
-        using var handle = Hid.Open(controller.Id, Hid.GenericRead | Hid.GenericWrite);
-        if (handle.IsInvalid)
-            throw new IOException($"open failed: error {Marshal.GetLastWin32Error()}");
-        var caps = Hid.GetCaps(handle) ?? throw new IOException("couldn't read HID capabilities");
+        using var link = HidLink.Open(controller.Collection)
+            ?? throw new IOException($"open failed: error {Marshal.GetLastWin32Error()}");
+        if (controller.Collection.InputLength == 0)
+            throw new IOException("couldn't read HID capabilities");
 
+        // Over USB this is just a harmless read (or unsupported, on a DualShock 4).
         if (!controller.FullReportRequested)
-        {
-            // Over USB this is just a harmless read (or unsupported, on a DualShock 4).
-            var feature = new byte[caps.FeatureReportByteLength];
-            feature[0] = CalibrationReportId;
-            controller.FullReportRequested = Hid.HidD_GetFeature(handle, feature, feature.Length);
-        }
+            controller.FullReportRequested = link.GetFeature(CalibrationReportId) is not null;
 
-        using var stream = new FileStream(handle, FileAccess.Read, 0, isAsync: true);
-        var buffer = new byte[caps.InputReportByteLength];
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(ReadTimeout);
         // Reads come back padded to the longest input report, which is 64 bytes only over USB.
-        bool bluetooth = caps.InputReportByteLength > UsbReportLength;
+        bool bluetooth = controller.Collection.InputLength > UsbReportLength;
         controller.Connection = bluetooth ? Connection.Bluetooth : Connection.Usb;
-        while (true)
-        {
-            int read = await stream.ReadAsync(buffer, timeout.Token);
-            if (read == 0)
-                throw new IOException("device closed");
-            // Short reports can still arrive just after the switch; full ones follow within milliseconds.
-            if (Parse(Models[controller.ProductId].Family, bluetooth, buffer.AsSpan(0, read)) is Status status)
-                return status;
-        }
+        // Short reports can still arrive just after the switch; full ones follow within milliseconds.
+        var family = Models[controller.ProductId].Family;
+        var report = await link.ReadAsync(r => Parse(family, bluetooth, r) is not null, ReadTimeout, token);
+        if (report is null || Parse(family, bluetooth, report) is not { } status || status == controller.Latest)
+            return;
+        controller.Latest = status;
+        ControllersChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <returns>null if the report carries no battery data (Bluetooth before the full report is on).</returns>
@@ -228,7 +186,7 @@ public sealed class PlayStationSource : IBatterySource, IDisposable
         lock (_controllers)
         {
             foreach (var controller in _controllers.Values)
-                controller.Stop.Cancel();
+                controller.Schedule?.Dispose();
             _controllers.Clear();
         }
     }

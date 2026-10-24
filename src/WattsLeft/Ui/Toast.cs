@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -6,6 +5,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Threading;
 using WattsLeft.Battery;
+using WattsLeft.Platform.Windows;
 
 namespace WattsLeft.Ui;
 
@@ -89,7 +89,7 @@ internal sealed class ToastManager : IDisposable
 /// A small borderless, topmost window that never takes focus from the game or app underneath. Fades in,
 /// waits, fades out; clicking dismisses it early.
 /// </summary>
-internal sealed partial class ToastWindow : Window
+internal sealed class ToastWindow : Window
 {
     /// <summary>Size at 96 DPI: a single line, half the height of a Steam notification.</summary>
     public const int LogicalWidth = 380, LogicalHeight = 30;
@@ -130,7 +130,7 @@ internal sealed partial class ToastWindow : Window
         {
             Appearance.StyleWindow(hwnd, Appearance.Corners.Round);
             // Never activated, and kept out of Alt+Tab.
-            SetWindowLongPtr(hwnd, GwlExStyle, GetWindowLongPtr(hwnd, GwlExStyle) | WsExToolWindow | WsExNoActivate);
+            Win32.MakeToolWindow(hwnd, neverActivate: true);
         }
         _holdUntil = DateTime.UtcNow + HoldTime;
         _animation.Start();
@@ -171,14 +171,6 @@ internal sealed partial class ToastWindow : Window
         base.OnClosed(e);
     }
 
-    private const int GwlExStyle = -20;
-    private const long WsExToolWindow = 0x00000080, WsExNoActivate = 0x08000000;
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static partial long GetWindowLongPtr(IntPtr hwnd, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static partial long SetWindowLongPtr(IntPtr hwnd, int index, long value);
 }
 
 /// <summary>A toast's contents: the accent bar, the icon, then the title and message on one line.</summary>

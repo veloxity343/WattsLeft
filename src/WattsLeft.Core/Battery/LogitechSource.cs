@@ -72,12 +72,14 @@ public sealed class LogitechSource : IBatterySource, IDisposable
     ];
 
     /// <summary>One receiver, or one device on its cable: the HID interface its devices are reached through.</summary>
-    private sealed class Link(string path, ushort productId)
+    private sealed class Link(HidCollection collection, ushort productId)
     {
-        public readonly string Path = path;
+        public readonly HidCollection Collection = collection;
         public readonly ushort ProductId = productId;
         /// <summary>When it's polled; made once the link is known.</summary>
         public PollSchedule? Schedule;
+        /// <summary>Held while it's polled, so a poll and diagnostics never ask it, or describe a device, at once.</summary>
+        public readonly SemaphoreSlim Polling = new(1, 1);
         public readonly Dictionary<byte, Paired> Devices = [];
         public bool IsReceiver => Receivers.Contains(ProductId);
         public bool IsHeadset => Headsets.ContainsKey(ProductId);
@@ -131,13 +133,31 @@ public sealed class LogitechSource : IBatterySource, IDisposable
         lock (_links)
             links = [.. _links.Values];
         Task.WhenAll(links.Select(link => PollAsync(link, allSlots: true, link.Schedule?.Stopping ?? CancellationToken.None))).Wait(timeout);
-        lock (_links)
+        var lines = new List<string>();
+        foreach (var link in links)
         {
-            return links.SelectMany(link => link.Devices.Select(kv =>
-                $"{kv.Value.Name}: receiver {link.ProductId:X4}{(link.IsReceiver ? $", slot {kv.Key}" : ", on its cable")}, " +
-                $"features {string.Join(" ", kv.Value.Features.Keys.Select(f => f.ToString("X4")))}, {kv.Value.Detail ?? "no battery reading"}"))
-                .ToList();
+            // Only between polls: one still running is filling in what's described here. The link's own schedule
+            // may be mid-poll; that takes a second or two.
+            if (!link.Polling.Wait(TimeSpan.FromSeconds(5)))
+            {
+                lines.Add($"receiver {link.ProductId:X4}: still being asked");
+                continue;
+            }
+            try
+            {
+                lock (_links)
+                {
+                    lines.AddRange(link.Devices.Select(kv =>
+                        $"{kv.Value.Name}: receiver {link.ProductId:X4}{(link.IsReceiver ? $", slot {kv.Key}" : ", on its cable")}, " +
+                        $"features {string.Join(" ", kv.Value.Features.Keys.Select(f => f.ToString("X4")))}, {kv.Value.Detail ?? "no battery reading"}"));
+                }
+            }
+            finally
+            {
+                link.Polling.Release();
+            }
         }
+        return lines;
     }
 
     public IReadOnlyList<ControllerBattery> Read()
@@ -154,7 +174,7 @@ public sealed class LogitechSource : IBatterySource, IDisposable
 
     private void OnAdded(HidInfo device)
     {
-        var link = new Link(device.Path, device.Product);
+        var link = new Link(new HidCollection(device), device.Product);
         lock (_links)
         {
             if (!_links.TryAdd(device.Path, link))
@@ -185,11 +205,22 @@ public sealed class LogitechSource : IBatterySource, IDisposable
     /// </summary>
     private async Task PollAsync(Link link, bool allSlots, CancellationToken token)
     {
+        await link.Polling.WaitAsync(token);
+        try
+        {
+            await PollLockedAsync(link, allSlots, token);
+        }
+        finally
+        {
+            link.Polling.Release();
+        }
+    }
+
+    private async Task PollLockedAsync(Link link, bool allSlots, CancellationToken token)
+    {
         // Opened for each poll and shared, so Logitech's own software and other apps keep working.
-        using var handle = Hid.Open(link.Path, Hid.GenericRead | Hid.GenericWrite);
-        if (handle.IsInvalid)
-            throw new IOException($"open failed: error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
-        using var stream = new FileStream(handle, FileAccess.ReadWrite, 0, isAsync: true);
+        using var stream = HidLink.Open(link.Collection)
+            ?? throw new IOException($"open failed: error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
 
         byte[] slots = !link.IsReceiver ? [DirectSlot] : [1, 2, 3, 4, 5, 6];
         lock (_links)
@@ -222,7 +253,7 @@ public sealed class LogitechSource : IBatterySource, IDisposable
     }
 
     /// <summary>The device in a slot with a fresh reading, or null if the slot is empty or its device is off.</summary>
-    private async Task<Paired?> ReadSlotAsync(Link link, FileStream stream, byte slot, Paired? device, CancellationToken token)
+    private async Task<Paired?> ReadSlotAsync(Link link, HidLink stream, byte slot, Paired? device, CancellationToken token)
     {
         // Pinging (root function 1) both checks the slot and wakes a dozing radio.
         var ping = await RequestAsync(stream, slot, 0, 1, [0, 0, 0xA5], device is null ? EmptySlotTimeout : FirstReplyTimeout, token);
@@ -254,7 +285,7 @@ public sealed class LogitechSource : IBatterySource, IDisposable
     }
 
     /// <summary>Its features, name, type and a stable id, asked once.</summary>
-    private async Task DescribeAsync(Link link, FileStream stream, byte slot, Paired device, CancellationToken token)
+    private async Task DescribeAsync(Link link, HidLink stream, byte slot, Paired device, CancellationToken token)
     {
         if (link.IsHeadset)
             device.Kind = DeviceKind.Headset;
@@ -322,7 +353,7 @@ public sealed class LogitechSource : IBatterySource, IDisposable
 
     /// <summary>From the first battery feature it has: unified battery, battery status, or battery voltage.</summary>
     private async Task<(int? Percent, BatteryLevel Level, ChargeState Power)?> ReadBatteryAsync(
-        FileStream stream, byte slot, Paired device, CancellationToken token)
+        HidLink stream, byte slot, Paired device, CancellationToken token)
     {
         if (device.Features.TryGetValue(AdcMeasurement, out byte adc))
         {
@@ -409,7 +440,7 @@ public sealed class LogitechSource : IBatterySource, IDisposable
     /// Sends one request and waits for its reply, recognised by our software id, skipping anything else
     /// on the interface (input, notifications, other apps' replies). No reply in time is a null reply.
     /// </summary>
-    private async Task<Answer> RequestAsync(FileStream stream, byte slot, byte feature, byte function, byte[] parameters,
+    private async Task<Answer> RequestAsync(HidLink stream, byte slot, byte feature, byte function, byte[] parameters,
         TimeSpan timeout, CancellationToken token)
     {
         // Software ids 1 to 15 tag requests; cycling through them means a late reply never matches the next request.
@@ -420,29 +451,14 @@ public sealed class LogitechSource : IBatterySource, IDisposable
         request[2] = feature;
         request[3] = (byte)(function << 4 | softwareId);
         parameters.CopyTo(request, 4);
-        await stream.WriteAsync(request, token);
 
-        using var wait = CancellationTokenSource.CreateLinkedTokenSource(token);
-        wait.CancelAfter(timeout);
-        var buffer = new byte[64];
-        try
-        {
-            while (true)
-            {
-                int read = await stream.ReadAsync(buffer, wait.Token);
-                if (read < 7 || buffer[1] != slot)
-                    continue;
-                // An error echoes our header after the error marker.
-                if ((buffer[2] is ErrorShort or ErrorLong) && buffer[3] == feature && buffer[4] == request[3])
-                    return new Answer(null, buffer[5]);
-                if (buffer[0] == LongReport && buffer[2] == feature && buffer[3] == request[3])
-                    return new Answer(buffer[..LongLength], null);
-            }
-        }
-        catch (OperationCanceledException) when (!token.IsCancellationRequested)
-        {
+        // The reply echoes the header; an error echoes it after the error marker.
+        var reply = await stream.AskAsync(request, r => r.Length >= 7 && r[1] == slot &&
+            ((r[2] is ErrorShort or ErrorLong && r[3] == feature && r[4] == request[3]) ||
+             (r[0] == LongReport && r.Length >= LongLength && r[2] == feature && r[3] == request[3])), timeout, token);
+        if (reply is null)
             return new Answer(null, null);
-        }
+        return reply[2] is ErrorShort or ErrorLong ? new Answer(null, reply[5]) : new Answer(reply[..LongLength], null);
     }
 
     public void Dispose()

@@ -128,33 +128,10 @@ internal sealed class Jbl : VendorProtocol
         var collection = device.Collections.Values.Select(c => c.Collection).FirstOrDefault(c => c.UsagePage == 0xFF13 && c.Usage == 0x0001);
         if (collection is null)
             return Task.FromResult<VendorReading?>(null);
+        ReportListener.Ensure(device, "listener", collection, r => r.Length > 1 && r[0] == 0x08 && r[1] <= 100,
+            r => device.Memo["heard"] = new VendorReading(r[1], ChargeState.Discharging), token);
         lock (device.Memo)
-        {
-            if (device.Memo.GetValueOrDefault("listener") is not Task { IsCompleted: false })
-                device.Memo["listener"] = Task.Run(() => ListenAsync(device, collection, token), token);
             return Task.FromResult(device.Memo.GetValueOrDefault("heard") as VendorReading);
-        }
-    }
-
-    private static async Task ListenAsync(VendorDevice device, HidCollection collection, CancellationToken token)
-    {
-        using var link = HidLink.Open(collection);
-        if (link is null)
-            return;
-        while (!token.IsCancellationRequested)
-        {
-            var started = DateTime.UtcNow;
-            var r = await link.ReadAsync(r => r.Length > 1 && r[0] == 0x08 && r[1] <= 100, TimeSpan.FromMinutes(5), token);
-            if (r is not null)
-            {
-                lock (device.Memo)
-                    device.Memo["heard"] = new VendorReading(r[1], ChargeState.Discharging);
-            }
-            else if (DateTime.UtcNow - started < TimeSpan.FromSeconds(1))
-            {
-                return; // the read failed at once: the receiver went away
-            }
-        }
     }
 }
 

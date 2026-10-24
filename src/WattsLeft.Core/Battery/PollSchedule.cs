@@ -1,12 +1,13 @@
 namespace WattsLeft.Battery;
 
 /// <summary>
-/// When a source that has to ask its devices (a receiver, a dongle) asks them, so they show as soon as they
-/// answer without being asked all the time:
+/// When a source that has to ask its devices (a receiver, a dongle, a controller) asks them, so they show as
+/// soon as they answer without being asked all the time. Every source that polls uses one, with its own
+/// interval:
 /// <list type="bullet">
 /// <item>every <see cref="Interval"/>, a full poll;</item>
 /// <item>straight away whenever Windows sends a device notice, which a device connecting to its receiver or
-/// switching on usually brings;</item>
+/// switching on usually brings (for sources that ask for it);</item>
 /// <item>every <see cref="SettlingInterval"/> for <see cref="SettlingTime"/> after <see cref="Settle"/>, for a
 /// device that has just appeared: a receiver is plugged in before the device behind it has connected to it.</item>
 /// </list>
@@ -14,7 +15,8 @@ namespace WattsLeft.Battery;
 /// </summary>
 internal sealed class PollSchedule : IDisposable
 {
-    public static readonly TimeSpan Interval = TimeSpan.FromSeconds(30);
+    /// <summary>The usual time between full polls.</summary>
+    public static readonly TimeSpan DefaultInterval = TimeSpan.FromSeconds(30);
     public static readonly TimeSpan SettlingTime = TimeSpan.FromSeconds(20);
     public static readonly TimeSpan SettlingInterval = TimeSpan.FromSeconds(2);
 
@@ -23,7 +25,7 @@ internal sealed class PollSchedule : IDisposable
     private readonly CancellationTokenSource _stop = new();
     /// <summary>Released to poll now rather than at the next interval.</summary>
     private readonly SemaphoreSlim _wake = new(0);
-    private readonly IDisposable _notices;
+    private readonly IDisposable? _notices;
     private long _settleUntil;
 
     /// <param name="name">What's polled, for the error log.</param>
@@ -32,13 +34,21 @@ internal sealed class PollSchedule : IDisposable
     /// quick one, when only what's in use need be.
     /// </param>
     /// <param name="ready">Waited for (up to 10 seconds) before the first poll: the devices already plugged in being listed.</param>
-    public PollSchedule(string name, Func<bool, CancellationToken, Task> poll, Task? ready = null)
+    /// <param name="interval">Time between full polls; <see cref="DefaultInterval"/> if not given.</param>
+    /// <param name="onDeviceNotices">Whether a device notice polls straight away.</param>
+    public PollSchedule(string name, Func<bool, CancellationToken, Task> poll, Task? ready = null, TimeSpan? interval = null,
+        bool onDeviceNotices = true)
     {
         _name = name;
         _poll = poll;
-        _notices = DeviceNotices.Watch(Wake);
+        Interval = interval ?? DefaultInterval;
+        if (onDeviceNotices)
+            _notices = DeviceNotices.Watch(Wake);
         _ = Task.Run(() => RunAsync(ready, _stop.Token));
     }
+
+    /// <summary>Time between full polls.</summary>
+    public TimeSpan Interval { get; }
 
     /// <summary>The token a poll should stop at, for one started outside the schedule.</summary>
     public CancellationToken Stopping => _stop.Token;
@@ -114,6 +124,6 @@ internal sealed class PollSchedule : IDisposable
     public void Dispose()
     {
         _stop.Cancel();
-        _notices.Dispose();
+        _notices?.Dispose();
     }
 }

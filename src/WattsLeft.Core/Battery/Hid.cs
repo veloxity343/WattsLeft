@@ -6,20 +6,12 @@ namespace WattsLeft.Battery;
 /// <summary>Raw Win32 HID access, for controllers whose battery Windows doesn't surface.</summary>
 internal static partial class Hid
 {
-    public const uint GenericRead = 0x80000000;
-    public const uint GenericWrite = 0x40000000;
-    private const uint FileShareReadWrite = 0x00000003;
-    private const uint OpenExisting = 3;
-    private const uint FileFlagOverlapped = 0x40000000;
+    public const uint GenericRead = DeviceFile.GenericRead;
+    public const uint GenericWrite = DeviceFile.GenericWrite;
     private const int HidpStatusSuccess = 0x00110000;
 
-    [LibraryImport("kernel32.dll", EntryPoint = "CreateFileW", StringMarshalling = StringMarshalling.Utf16, SetLastError = true)]
-    private static partial SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security,
-        uint creation, uint flags, IntPtr template);
-
     /// <summary>Opens a HID device interface for overlapped I/O, shared so games can keep using it.</summary>
-    public static SafeFileHandle Open(string path, uint access) =>
-        CreateFile(path, access, FileShareReadWrite, IntPtr.Zero, OpenExisting, FileFlagOverlapped, IntPtr.Zero);
+    public static SafeFileHandle Open(string path, uint access) => DeviceFile.Open(path, access, overlapped: true);
 
     [StructLayout(LayoutKind.Sequential)]
     public struct HiddAttributes

@@ -13,13 +13,19 @@ internal static class Log
     internal static readonly string Folder = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "WattsLeft");
 
+    private static readonly object WriteLock = new();
+
     /// <summary>Appends to a log in %LOCALAPPDATA%\WattsLeft, since a tray app has nowhere else to report.</summary>
     internal static void Write(string message, string fileName = ErrorFile)
     {
         try
         {
-            Directory.CreateDirectory(Folder);
-            File.AppendAllText(Path.Combine(Folder, fileName), $"{DateTime.Now:O} {message}{Environment.NewLine}");
+            // One writer at a time: the pollers log from their own threads, and two appends at once would lose a line.
+            lock (WriteLock)
+            {
+                Directory.CreateDirectory(Folder);
+                File.AppendAllText(Path.Combine(Folder, fileName), $"{DateTime.Now:O} {message}{Environment.NewLine}");
+            }
         }
         catch (IOException) { }
         catch (UnauthorizedAccessException) { }

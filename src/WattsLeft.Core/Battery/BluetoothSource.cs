@@ -1,5 +1,4 @@
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 
 namespace WattsLeft.Battery;
 
@@ -9,42 +8,23 @@ namespace WattsLeft.Battery;
 /// Bluetooth mice, keyboards and headsets, over both Bluetooth Low Energy and classic Bluetooth. Xbox and
 /// PlayStation controllers are left to their own sources, which know more about them.
 /// </summary>
-public sealed partial class BluetoothSource : IBatterySource, IDisposable
+public sealed partial class BluetoothSource : IBatterySource
 {
     public string Name => "Bluetooth";
 
-    public event EventHandler? ControllersChanged;
+    /// <summary>
+    /// Never raised: Windows doesn't announce battery levels changing. A device connecting or going brings a
+    /// device notice, which the tray refreshes on, and levels come with each refresh.
+    /// </summary>
+    public event EventHandler? ControllersChanged
+    {
+        add { }
+        remove { }
+    }
 
-    private readonly IDisposable _notices;
     private readonly ChargeTrends _trends = new();
     /// <summary>A device's type doesn't change, so it's looked up once per address.</summary>
     private readonly Dictionary<string, DeviceKind> _kinds = [];
-
-    // Bluetooth service ids (16-bit, in their full form) that mean a device plays audio: A2DP sink,
-    // hands-free, headset and headset audio gateway.
-    private static readonly string[] AudioServices = ["0000110b-", "0000111e-", "00001108-", "00001131-"];
-
-    /// <summary>A device's own node, e.g. BTHENUM\DEV_A0FA9C2B7263\..., which carries the battery level.</summary>
-    [GeneratedRegex(@"^BTH(LE|ENUM)\\DEV_([0-9A-F]{12})\\", RegexOptions.IgnoreCase)]
-    private static partial Regex DeviceNodeId();
-
-    /// <summary>
-    /// A classic device's service node, e.g. BTHENUM\{0000110b-...}_VID&amp;0002054c_PID&amp;0ce6\9&amp;...&amp;A0FA9C2B7263_C00000000:
-    /// the service, maybe the maker and model, then the address.
-    /// </summary>
-    [GeneratedRegex(@"^BTHENUM\\\{([0-9A-F-]{36})\}(?:_VID&[0-9A-F]*?([0-9A-F]{4})_PID&([0-9A-F]{4}))?[^\\]*\\.*?([0-9A-F]{12})_C[0-9A-F]+$", RegexOptions.IgnoreCase)]
-    private static partial Regex ClassicServiceNodeId();
-
-    /// <summary>A Low Energy device's service node, e.g. BTHLEDEVICE\{...}_DEV_VID&amp;02045E_PID&amp;0B13_REV&amp;0509_70F8AE8F7583\...</summary>
-    [GeneratedRegex(@"^BTHLEDEVICE\\\{([0-9A-F-]{36})\}_(?:DEV_VID&[0-9A-F]*?([0-9A-F]{4})_PID&([0-9A-F]{4})_REV&[0-9A-F]{4}_)?([0-9A-F]{12})\\", RegexOptions.IgnoreCase)]
-    private static partial Regex LowEnergyServiceNodeId();
-
-    public BluetoothSource()
-    {
-        // A device connecting or disconnecting brings or takes its interfaces: look again then, not just at the
-        // next poll. Battery levels Windows updates in the meantime come with the poll.
-        _notices = DeviceNotices.Watch(() => ControllersChanged?.Invoke(this, EventArgs.Empty));
-    }
 
 
     // Device setup classes Windows files a device's parts under.
@@ -53,37 +33,24 @@ public sealed partial class BluetoothSource : IBatterySource, IDisposable
     private static readonly Guid AudioEndpointClass = new("c166523c-fe0c-4a94-a586-f1a80cfbbf3e");
     private static readonly Guid MediaClass = new("4d36e96c-e325-11ce-bfc1-08002be10318");
 
-    private sealed record Device(string Address, string Name, bool LowEnergy, int Percent, bool? Connected, Guid? Container)
-    {
-        public ushort? VendorId { get; set; }
-        public ushort? ProductId { get; set; }
-        public bool Audio { get; set; }
-    }
+    /// <summary>Held while reading: the tray and the diagnostics report can read at once, and both update what's kept.</summary>
+    private readonly object _readGate = new();
 
     public IReadOnlyList<ControllerBattery> Read()
     {
-        var devices = new Dictionary<string, Device>(StringComparer.OrdinalIgnoreCase);
-        foreach (string prefix in new[] { @"BTHLE\DEV_", @"BTHENUM\DEV_" })
-        {
-            foreach (var node in BluetoothLeBattery.FindDevices(prefix,
-                         [BluetoothLeBattery.BatteryKey, BluetoothLeBattery.ConnectedKey, DeviceQuery.ContainerId]))
-            {
-                var match = DeviceNodeId().Match(BluetoothLeBattery.InstanceId(node));
-                if (!match.Success || node[BluetoothLeBattery.BatteryKey] is not IConvertible battery)
-                    continue;
-                string address = match.Groups[2].Value.ToUpperInvariant();
-                devices[address] = new Device(address, node.Name, match.Groups[1].Value.Equals("LE", StringComparison.OrdinalIgnoreCase),
-                    Math.Clamp(battery.ToInt32(null), 0, 100), node[BluetoothLeBattery.ConnectedKey] as bool?,
-                    node[DeviceQuery.ContainerId] as Guid?);
-            }
-        }
+        lock (_readGate)
+            return ReadLocked();
+    }
+
+    private List<ControllerBattery> ReadLocked()
+    {
+        var devices = BluetoothDevices.List();
         if (devices.Count == 0)
             return [];
-        AddServiceDetails(devices);
         var classic = ClassicDevices();
 
         var readings = new List<ControllerBattery>();
-        foreach (var device in devices.Values)
+        foreach (var device in devices)
         {
             var (connected, kind) = Ask(device, device.LowEnergy ? null : classic.GetValueOrDefault(device.Address));
             if (connected != true)
@@ -103,27 +70,6 @@ public sealed partial class BluetoothSource : IBatterySource, IDisposable
         }
         _trends.KeepOnly(readings.Select(r => r.Id));
         return readings;
-    }
-
-    /// <summary>Its maker and model, and whether it plays audio, from the services Windows lists for it.</summary>
-    private static void AddServiceDetails(Dictionary<string, Device> devices)
-    {
-        foreach (var (prefix, pattern) in new[] { (@"BTHENUM\{", ClassicServiceNodeId()), (@"BTHLEDEVICE\{", LowEnergyServiceNodeId()) })
-        {
-            foreach (var node in BluetoothLeBattery.FindDevices(prefix, []))
-            {
-                var match = pattern.Match(BluetoothLeBattery.InstanceId(node));
-                if (!match.Success || !devices.TryGetValue(match.Groups[4].Value, out var device))
-                    continue;
-                if (AudioServices.Any(match.Groups[1].Value.ToLowerInvariant().StartsWith))
-                    device.Audio = true;
-                if (match.Groups[2].Success && device.VendorId is null)
-                {
-                    device.VendorId = Convert.ToUInt16(match.Groups[2].Value, 16);
-                    device.ProductId = Convert.ToUInt16(match.Groups[3].Value, 16);
-                }
-            }
-        }
     }
 
     /// <summary>What the Bluetooth stack records about a paired classic device: whether it's connected, and its class.</summary>
@@ -174,7 +120,7 @@ public sealed partial class BluetoothSource : IBatterySource, IDisposable
     /// fallback, as it can read as disconnected for a headset playing audio. Low Energy devices use that flag,
     /// and the appearance Windows keeps from pairing.
     /// </summary>
-    private (bool? Connected, DeviceKind Kind) Ask(Device device, Endpoint? endpoint)
+    private (bool? Connected, DeviceKind Kind) Ask(BluetoothDevice device, Endpoint? endpoint)
     {
         bool? connected = endpoint?.Connected ?? device.Connected;
         bool knowKind = _kinds.TryGetValue(device.Address, out var kind);
@@ -312,9 +258,4 @@ public sealed partial class BluetoothSource : IBatterySource, IDisposable
     [LibraryImport("bthprops.cpl")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool BluetoothFindDeviceClose(IntPtr find);
-
-    public void Dispose()
-    {
-        _notices.Dispose();
-    }
 }

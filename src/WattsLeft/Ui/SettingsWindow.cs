@@ -6,6 +6,7 @@ using Avalonia.Media;
 using Avalonia.Styling;
 using Avalonia.Threading;
 using WattsLeft.Battery;
+using WattsLeft.Platform.Windows;
 
 namespace WattsLeft.Ui;
 
@@ -123,7 +124,7 @@ internal sealed class SettingsWindow : Window
     /// </summary>
     private void SizeAndCentre()
     {
-        var screen = Screens.ScreenFromPoint(PointerPosition.Position()) ?? Screens.Primary;
+        var screen = Screens.ScreenFromPoint(Win32.PointerPosition()) ?? Screens.Primary;
         if (screen is null)
         {
             (Width, Height) = (OpenWidth, OpenHeight);
@@ -412,12 +413,13 @@ internal sealed class SettingsWindow : Window
         try
         {
             Directory.CreateDirectory(Log.Folder);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Log.Folder) { UseShellExecute = true });
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Log.Write($"Opening the data folder failed: {ex.Message}");
+            Log.Write($"Making the data folder failed: {ex.Message}");
+            return;
         }
+        Win32.Open(Log.Folder);
     }
 
     /// <summary>
@@ -692,20 +694,4 @@ internal sealed class SettingsWindow : Window
             return y + PagePadding;
         }
     }
-}
-
-/// <summary>The pointer's position on screen.</summary>
-internal static partial class PointerPosition
-{
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    private struct NativePoint
-    {
-        public int X, Y;
-    }
-
-    [System.Runtime.InteropServices.LibraryImport("user32.dll")]
-    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out NativePoint point);
-
-    public static PixelPoint Position() => GetCursorPos(out var p) ? new PixelPoint(p.X, p.Y) : default;
 }

@@ -18,6 +18,8 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 ### Fixed
 
 - Logitech devices show up as soon as they connect to their receiver, after plugging the receiver back in or switching the device on, instead of up to 30 seconds later. They also leave the tray straight away when unplugged or switched off. Devices on other makers' receivers are asked straight away when something connects too, and every 2 seconds for a while after their receiver is plugged in.
+- Making a Diagnostics report while devices were being read could, rarely, garble a device's details or lose a log line. Each device is now read by one thing at a time, and log lines are written one at a time.
+- PlayStation controller read failures are now recorded in `error.log`, like every other device's.
 
 ## [0.6.0] - 2026-10-24
 

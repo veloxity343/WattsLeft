@@ -39,7 +39,7 @@ internal sealed unsafe partial class NotifyIcons : IDisposable
     public NotifyIcons()
     {
         s_instance = this;
-        var module = GetModuleHandle(null);
+        var module = Win32.ThisModule;
         fixed (char* name = WindowClass)
         {
             var cls = new WndClassEx
@@ -115,8 +115,7 @@ internal sealed unsafe partial class NotifyIcons : IDisposable
                     int mouse = (int)lParam & 0xFFFF;
                     if (mouse is WmLButtonUp or WmRButtonUp && self._icons.FirstOrDefault(i => i.Id == (uint)wParam) is { } icon)
                     {
-                        GetCursorPos(out var point);
-                        self.Clicked?.Invoke(icon, mouse == WmLButtonUp, new PixelPoint(point.X, point.Y));
+                        self.Clicked?.Invoke(icon, mouse == WmLButtonUp, Win32.PointerPosition());
                     }
                     return 0;
                 }
@@ -264,11 +263,6 @@ internal sealed unsafe partial class NotifyIcons : IDisposable
         public IntPtr Mask, Color;
     }
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct NativePoint
-    {
-        public int X, Y;
-    }
 
     [LibraryImport("shell32.dll", EntryPoint = "Shell_NotifyIconW")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -290,10 +284,6 @@ internal sealed unsafe partial class NotifyIcons : IDisposable
 
     [LibraryImport("user32.dll", EntryPoint = "RegisterWindowMessageW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial uint RegisterWindowMessage(string name);
-
-    [LibraryImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static partial bool GetCursorPos(out NativePoint point);
 
     [LibraryImport("user32.dll")]
     private static partial int GetSystemMetrics(int index);
@@ -320,6 +310,4 @@ internal sealed unsafe partial class NotifyIcons : IDisposable
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool DeleteObject(IntPtr obj);
 
-    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial IntPtr GetModuleHandle(string? name);
 }

@@ -4,6 +4,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Media;
 using Avalonia.Threading;
+using WattsLeft.Platform.Windows;
 
 namespace WattsLeft.Ui;
 
@@ -47,8 +48,7 @@ internal partial class PopupWindow : Window
         base.OnOpened(e);
         var hwnd = Hwnd;
         Appearance.StyleWindow(hwnd, _corners, _border);
-        // A tool window stays out of Alt+Tab and the taskbar.
-        SetWindowLongPtr(hwnd, GwlExStyle, GetWindowLongPtr(hwnd, GwlExStyle) | WsExToolWindow);
+        Win32.MakeToolWindow(hwnd);
         SetForegroundWindow(hwnd);
         Open.Add(this);
         InstallHook();
@@ -114,7 +114,7 @@ internal partial class PopupWindow : Window
     private static unsafe void InstallHook()
     {
         if (s_hook == IntPtr.Zero)
-            s_hook = SetWindowsHookEx(WhMouseLowLevel, &OnMouse, GetModuleHandle(null), 0);
+            s_hook = SetWindowsHookEx(WhMouseLowLevel, &OnMouse, Win32.ThisModule, 0);
     }
 
     private static void RemoveHook()
@@ -148,20 +148,12 @@ internal partial class PopupWindow : Window
     }
 
     // Win32.
-    private const int GwlExStyle = -20;
-    private const long WsExToolWindow = 0x00000080;
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeRect
     {
         public int Left, Top, Right, Bottom;
     }
-
-    [LibraryImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static partial long GetWindowLongPtr(IntPtr hwnd, int index);
-
-    [LibraryImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
-    private static partial long SetWindowLongPtr(IntPtr hwnd, int index, long value);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -182,6 +174,4 @@ internal partial class PopupWindow : Window
     [LibraryImport("user32.dll")]
     private static partial IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
 
-    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
-    private static partial IntPtr GetModuleHandle(string? moduleName);
 }
