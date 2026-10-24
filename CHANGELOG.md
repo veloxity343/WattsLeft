@@ -11,6 +11,10 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 
 ## [Unreleased]
 
+### Fixed
+
+- Logitech devices show up as soon as they connect to their receiver, after plugging the receiver back in or switching the device on, instead of up to 30 seconds later. They also leave the tray straight away when unplugged or switched off.
+
 ## [0.6.0] - 2026-10-24
 
 ### Added

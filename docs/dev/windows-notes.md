@@ -47,7 +47,10 @@ Documented APIs that don't behave as you'd expect.
 
 **PlayStation controllers over Bluetooth** send a short report without battery data until their calibration feature report is read, which switches them to the full report until they reconnect. That's a read, not a command, but it changes what the controller sends: see [the limitation it causes](../wiki/supported-devices.md#known-limitations).
 
-**Logitech receivers:** a receiver that's unplugged and plugged back in takes about 30 seconds to show its devices again. Shortening that is an open item.
+**Logitech receivers:**
+- A receiver answers as soon as it's plugged in, but its devices reconnect to it a few seconds later, or only once moved if they're asleep. A device connecting brings its own interfaces with it, so Windows sends a device notice: `LogitechSource` polls its receivers on every notice, and the device shows within half a second of connecting. A new receiver is also polled every 2 seconds for its first 20 seconds, in case a notice is missed.
+- **A Lightspeed receiver's empty slots don't answer at all**, so each costs a full timeout (0.7 s). Polls between the regular 30-second ones ask only the slots a receiver has had a device in (`_slotsInUse`); the regular poll still asks all six, so a newly paired device is found.
+- Each change is reported as soon as its slot is read, not after every slot has been asked.
 
 **The tray icon's place is remembered by the exe's path.** Windows keeps whether an icon is pinned beside the clock by the program's full path, so the exe must keep its name (`WattsLeft.exe`) and its install folder from one version to the next. The rename from ControllerHP lost everyone's pin once; don't rename the exe again without a good reason.
 

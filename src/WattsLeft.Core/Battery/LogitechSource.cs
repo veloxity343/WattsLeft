@@ -23,6 +23,15 @@ public sealed class LogitechSource : IBatterySource, IDisposable
     public event EventHandler? ControllersChanged;
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// A receiver answers as soon as it's plugged in, but its devices take a moment longer to reconnect to it,
+    /// so the first poll finds their slots unreachable. For this long after a link appears it's polled every
+    /// <see cref="SettlingInterval"/>, so a device shows within seconds of reconnecting, not at the next poll.
+    /// A device reconnecting later (a mouse woken by a click, say) is caught by the device notice its arrival
+    /// brings, which polls straight away.
+    /// </summary>
+    private static readonly TimeSpan SettlingTime = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan SettlingInterval = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan ReplyTimeout = TimeSpan.FromMilliseconds(600);
     /// <summary>
     /// A dozing radio can take half a second or so to answer the first request. A slot that's never had a
@@ -78,6 +87,8 @@ public sealed class LogitechSource : IBatterySource, IDisposable
         public readonly string Path = path;
         public readonly ushort ProductId = productId;
         public readonly CancellationTokenSource Stop = new();
+        /// <summary>Released to poll now rather than at the next interval.</summary>
+        public readonly SemaphoreSlim Wake = new(0);
         public readonly Dictionary<byte, Paired> Devices = [];
         public bool IsReceiver => Receivers.Contains(ProductId);
         public bool IsHeadset => Headsets.ContainsKey(ProductId);
@@ -96,7 +107,12 @@ public sealed class LogitechSource : IBatterySource, IDisposable
     }
 
     private readonly Dictionary<string, Link> _links = [];
-    private readonly IDisposable _watch;
+    /// <summary>
+    /// The slots each kind of receiver has had a device in. Polling between full polls asks only these: a
+    /// Lightspeed receiver's empty slots don't answer at all, and waiting for each costs most of a second.
+    /// </summary>
+    private readonly Dictionary<ushort, HashSet<byte>> _slotsInUse = [];
+    private readonly IDisposable _watch, _notices;
     /// <summary>Done once the receivers already plugged in have been seen.</summary>
     private readonly Task _listed;
     private int _softwareId;
@@ -113,6 +129,8 @@ public sealed class LogitechSource : IBatterySource, IDisposable
             _ => false,
         };
         _watch = HidMonitor.Watch(Wanted, OnAdded, OnRemoved, out _listed);
+        // A device connecting to its receiver brings its own interfaces with it: ask the receivers then.
+        _notices = DeviceNotices.Watch(WakeAll);
     }
 
     /// <summary>
@@ -125,7 +143,7 @@ public sealed class LogitechSource : IBatterySource, IDisposable
         Link[] links;
         lock (_links)
             links = [.. _links.Values];
-        Task.WhenAll(links.Select(link => PollAsync(link, link.Stop.Token))).Wait(timeout);
+        Task.WhenAll(links.Select(link => PollAsync(link, allSlots: true, link.Stop.Token))).Wait(timeout);
         lock (_links)
         {
             return links.SelectMany(link => link.Devices.Select(kv =>
@@ -170,15 +188,31 @@ public sealed class LogitechSource : IBatterySource, IDisposable
         ControllersChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    /// <summary>Asks every link to poll now, for a device that may have just connected or gone.</summary>
+    private void WakeAll()
+    {
+        lock (_links)
+        {
+            foreach (var link in _links.Values.Where(l => l.Wake.CurrentCount == 0))
+                link.Wake.Release();
+        }
+    }
+
     private async Task WatchAsync(Link link)
     {
         var token = link.Stop.Token;
+        var settled = DateTime.UtcNow + SettlingTime;
+        var nextFullPoll = DateTime.MinValue;
         while (!token.IsCancellationRequested)
         {
             try
             {
-                if (await PollAsync(link, token))
-                    ControllersChanged?.Invoke(this, EventArgs.Empty);
+                // Every slot at each regular poll, so a newly paired device is found; while settling, or woken by
+                // a device notice, only the slots in use, so the answer comes quickly.
+                bool all = DateTime.UtcNow >= settled && DateTime.UtcNow >= nextFullPoll;
+                await PollAsync(link, all, token);
+                if (all)
+                    nextFullPoll = DateTime.UtcNow + PollInterval;
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -191,7 +225,11 @@ public sealed class LogitechSource : IBatterySource, IDisposable
 
             try
             {
-                await Task.Delay(PollInterval, token);
+                var wait = DateTime.UtcNow < settled ? SettlingInterval : nextFullPoll - DateTime.UtcNow;
+                if (wait > TimeSpan.Zero)
+                    await link.Wake.WaitAsync(wait, token);
+                while (link.Wake.CurrentCount > 0)
+                    link.Wake.Wait(0); // one poll answers any number of notices
             }
             catch (OperationCanceledException)
             {
@@ -200,8 +238,11 @@ public sealed class LogitechSource : IBatterySource, IDisposable
         }
     }
 
-    /// <summary>Asks every slot on the link for its battery. True if any reading changed.</summary>
-    private async Task<bool> PollAsync(Link link, CancellationToken token)
+    /// <summary>
+    /// Asks the link's slots for their battery: all of them, or only those in use (all, if none are known yet).
+    /// Each change is passed on as soon as it's read, not once every slot has been asked.
+    /// </summary>
+    private async Task PollAsync(Link link, bool allSlots, CancellationToken token)
     {
         // Opened for each poll and shared, so Logitech's own software and other apps keep working.
         using var handle = Hid.Open(link.Path, Hid.GenericRead | Hid.GenericWrite);
@@ -209,8 +250,12 @@ public sealed class LogitechSource : IBatterySource, IDisposable
             throw new IOException($"open failed: error {System.Runtime.InteropServices.Marshal.GetLastWin32Error()}");
         using var stream = new FileStream(handle, FileAccess.ReadWrite, 0, isAsync: true);
 
-        bool changed = false;
-        byte[] slots = link.IsReceiver ? [1, 2, 3, 4, 5, 6] : [DirectSlot];
+        byte[] slots = !link.IsReceiver ? [DirectSlot] : [1, 2, 3, 4, 5, 6];
+        lock (_links)
+        {
+            if (link.IsReceiver && !allSlots && _slotsInUse.TryGetValue(link.ProductId, out var inUse) && inUse.Count > 0)
+                slots = [.. inUse.Order()];
+        }
         foreach (byte slot in slots)
         {
             Paired? device;
@@ -223,11 +268,16 @@ public sealed class LogitechSource : IBatterySource, IDisposable
                 if (after is null)
                     link.Devices.Remove(slot);
                 else
+                {
                     link.Devices[slot] = after;
+                    if (!_slotsInUse.TryGetValue(link.ProductId, out var inUse))
+                        _slotsInUse[link.ProductId] = inUse = [];
+                    inUse.Add(slot);
+                }
             }
-            changed |= after?.Reading != before;
+            if (after?.Reading != before)
+                ControllersChanged?.Invoke(this, EventArgs.Empty);
         }
-        return changed;
     }
 
     /// <summary>The device in a slot with a fresh reading, or null if the slot is empty or its device is off.</summary>
@@ -456,6 +506,7 @@ public sealed class LogitechSource : IBatterySource, IDisposable
 
     public void Dispose()
     {
+        _notices.Dispose();
         _watch.Dispose();
         lock (_links)
         {
