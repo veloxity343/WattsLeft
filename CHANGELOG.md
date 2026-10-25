@@ -11,6 +11,8 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-25
+
 ### Fixed
 
 - An update whose download stalled partway, with the connection still open, could wait for ever, leaving Settings at "Downloading…" and blocking another try until WattsLeft restarted. A download now gives up after 30 seconds without receiving anything, or 5 minutes in all, and can be tried again straight away. Thanks to huvubb for the report.
@@ -138,7 +140,8 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 - Pop-ups when a controller connects or disconnects, and when its battery reaches 20% and 10%.
 - **Start with Windows**.
 
-[Unreleased]: https://github.com/veloxity343/WattsLeft/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/veloxity343/WattsLeft/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/veloxity343/WattsLeft/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/veloxity343/WattsLeft/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/veloxity343/WattsLeft/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/veloxity343/WattsLeft/compare/v0.4.1...v0.5.0

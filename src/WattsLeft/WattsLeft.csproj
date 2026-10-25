@@ -52,7 +52,7 @@
   </Target>
 
   <PropertyGroup>
-    <Version>0.6.1</Version>
+    <Version>0.6.2</Version>
     <Product>WattsLeft</Product>
     <Title>WattsLeft</Title>
     <Description>Battery meter for game controllers and other devices, in the Windows taskbar.</Description>
