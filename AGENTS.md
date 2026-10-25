@@ -43,3 +43,4 @@ Docs, changelog and text in the app use plain, British English ("colour", "licen
 3. Commit, push `main`, and wait for CI to pass.
 4. Tag `vx.y.z` on that commit and push the tag. CI builds, tests and publishes the release with the changelog section as its notes. Tags with a hyphen (`v1.0.0-beta.1`) become pre-releases.
 5. Check the release has its zip and is marked Latest. Published releases are immutable: if one is wrong, release the next patch version.
+6. Prepare the winget manifests for the new version in `packaging/winget/` and validate them (its README says how). The maintainer submits them with `wingetcreate submit` and a short-lived token; it isn't automated.
