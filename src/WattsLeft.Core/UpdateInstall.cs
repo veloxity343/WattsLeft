@@ -21,7 +21,13 @@ internal static class UpdateInstall
     /// <summary>A release is about 16 MB; anything far bigger isn't one.</summary>
     private const long MaxZipBytes = 100L * 1024 * 1024;
     private const int MaxChecksumBytes = 1024;
-    private static readonly TimeSpan Timeout = TimeSpan.FromMinutes(5);
+    /// <summary>
+    /// The longest a whole update may take to download, and the longest a download may go without receiving
+    /// anything. HttpClient's own timeout only covers the reply's headers, not reading its body, so both are
+    /// cancellation deadlines passed to every request and read: a connection that stalls fails, rather than
+    /// waiting for ever and blocking another try.
+    /// </summary>
+    private static readonly TimeSpan Deadline = TimeSpan.FromMinutes(5), StallLimit = TimeSpan.FromSeconds(30);
     private const string ExeName = "WattsLeft.exe";
 
     /// <summary>Where updates are unpacked before they're installed: inside the data folder, never the app's.</summary>
@@ -63,42 +69,60 @@ internal static class UpdateInstall
         Directory.CreateDirectory(folder);
         string zipPath = Path.Combine(folder, zipName);
 
-        using var http = new HttpClient { Timeout = Timeout };
+        using var http = new HttpClient { Timeout = Deadline };
         http.DefaultRequestHeaders.UserAgent.ParseAdd($"WattsLeft/{UpdateCheck.Current.ToString(3)}");
+        // The whole download's deadline, and a stall limit that every read pushes back.
+        using var deadline = new CancellationTokenSource(Deadline);
+        using var stall = new CancellationTokenSource(StallLimit);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token, stall.Token);
+        var token = linked.Token;
 
         // The checksum first: a release without one can't be checked, so isn't installed.
         string expected;
-        using (var reply = await http.GetAsync(checksumAddress, HttpCompletionOption.ResponseHeadersRead))
+        using (var reply = await http.GetAsync(checksumAddress, HttpCompletionOption.ResponseHeadersRead, token))
         {
             CheckReply(reply);
             if (reply.Content.Headers.ContentLength > MaxChecksumBytes)
                 throw new InvalidDataException("The checksum file is too big");
-            string text = await reply.Content.ReadAsStringAsync();
+            // Read to the limit and no further, whether or not the reply said how long it is.
+            await using var body = await reply.Content.ReadAsStreamAsync(token);
+            var bytes = new byte[MaxChecksumBytes + 1];
+            int filled = 0, got;
+            while (filled < bytes.Length && (got = await body.ReadAsync(bytes.AsMemory(filled), token)) > 0)
+            {
+                filled += got;
+                stall.CancelAfter(StallLimit);
+            }
+            if (filled > MaxChecksumBytes)
+                throw new InvalidDataException("The checksum file is too big");
+            string text = System.Text.Encoding.ASCII.GetString(bytes, 0, filled);
             expected = text.Length >= 64 && text[..64].All(Uri.IsHexDigit)
                 ? text[..64].ToLowerInvariant()
                 : throw new InvalidDataException("The checksum file doesn't hold a SHA-256");
         }
 
         string actual;
-        using (var reply = await http.GetAsync(zipAddress, HttpCompletionOption.ResponseHeadersRead))
+        stall.CancelAfter(StallLimit);
+        using (var reply = await http.GetAsync(zipAddress, HttpCompletionOption.ResponseHeadersRead, token))
         {
             CheckReply(reply);
             long? length = reply.Content.Headers.ContentLength;
             if (length > MaxZipBytes)
                 throw new InvalidDataException($"The download is too big ({length} bytes)");
-            await using var download = await reply.Content.ReadAsStreamAsync();
+            await using var download = await reply.Content.ReadAsStreamAsync(token);
             await using var file = File.Create(zipPath);
             using var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
             var buffer = new byte[81920];
             long total = 0;
             int read;
-            while ((read = await download.ReadAsync(buffer)) > 0)
+            while ((read = await download.ReadAsync(buffer, token)) > 0)
             {
+                stall.CancelAfter(StallLimit);
                 total += read;
                 if (total > MaxZipBytes)
                     throw new InvalidDataException("The download is too big");
                 sha.AppendData(buffer, 0, read);
-                await file.WriteAsync(buffer.AsMemory(0, read));
+                await file.WriteAsync(buffer.AsMemory(0, read), token);
                 if (length > 0)
                     progress.Report((double)total / length.Value);
             }

@@ -132,7 +132,7 @@ internal static class Updates
         catch (Exception ex)
         {
             Log.Write($"Updating to {version} failed: {ex.GetType().Name}: {ex.Message}");
-            InstallError = ex is HttpRequestException or TaskCanceledException
+            InstallError = ex is HttpRequestException or OperationCanceledException
                 ? "Couldn't download the update. Try again, or download it from GitHub."
                 : "The update didn't check out, so nothing was changed. Try again, or download it from GitHub.";
             Installing = null;

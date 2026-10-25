@@ -11,6 +11,10 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 
 ## [Unreleased]
 
+### Fixed
+
+- An update whose download stalled partway, with the connection still open, could wait for ever, leaving Settings at "Downloading…" and blocking another try until WattsLeft restarted. A download now gives up after 30 seconds without receiving anything, or 5 minutes in all, and can be tried again straight away. Thanks to huvubb for the report.
+
 ## [0.6.1] - 2026-10-25
 
 ### Changed
