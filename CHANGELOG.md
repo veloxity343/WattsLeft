@@ -11,6 +11,10 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 
 ## [Unreleased]
 
+### Fixed
+
+- The first start no longer writes a needless "Couldn't delete status.json" line to the error log.
+
 ## [0.6.2] - 2026-10-25
 
 ### Fixed

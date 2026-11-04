@@ -91,6 +91,10 @@ internal static class StatusFile
         {
             File.Delete(FullPath);
         }
+        catch (DirectoryNotFoundException)
+        {
+            // No data folder yet, as on a first start, so no file either.
+        }
         catch (Exception e) when (e is IOException or UnauthorizedAccessException)
         {
             Log.Write($"Couldn't delete {FileName}: {e.Message}");
