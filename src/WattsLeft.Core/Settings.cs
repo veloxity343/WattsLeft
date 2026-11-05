@@ -338,6 +338,30 @@ internal static class Settings
         }
     }
 
+    /// <summary>
+    /// Keeps Start with Windows working after the app's folder is moved: if it's on but starts an exe that's no
+    /// longer there, it's pointed at this one. An exe that's still there is left alone, so another copy, a test
+    /// build say, never takes it over.
+    /// </summary>
+    public static void FollowMovedApp()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            if (key?.GetValue(RunValueName) is not string command)
+                return;
+            string path = command.Trim().Trim('"');
+            if (File.Exists(path) || string.Equals(path, Environment.ProcessPath, StringComparison.OrdinalIgnoreCase))
+                return;
+            key.SetValue(RunValueName, $"\"{Environment.ProcessPath}\"");
+            Log.Write($"Start with Windows now starts {Environment.ProcessPath}, as {path} is gone", Log.HistoryFile);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        {
+            Log.Write($"Couldn't update Start with Windows: {e.Message}");
+        }
+    }
+
     private static object? Read(string name)
     {
         using var key = Registry.CurrentUser.OpenSubKey(KeyPath);

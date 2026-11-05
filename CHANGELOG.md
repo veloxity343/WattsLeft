@@ -13,6 +13,8 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 
 ### Fixed
 
+- Start with Windows keeps working if you move WattsLeft's folder: the next time you start it from its new place, it points Windows there.
+
 - The first start no longer writes a needless "Couldn't delete status.json" line to the error log.
 
 ## [0.6.2] - 2026-10-25

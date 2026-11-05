@@ -49,6 +49,7 @@ internal static partial class Program
             return 0;
 
         UpdateInstall.CleanUp();
+        Settings.FollowMovedApp();
         Log.Trim();
         AppDomain.CurrentDomain.UnhandledException += (_, e) => Log.Write($"Unhandled exception: {e.ExceptionObject}");
         var sources = CreateSources();

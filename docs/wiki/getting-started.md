@@ -41,7 +41,7 @@ Windows hides new tray icons in the overflow area (the **^** arrow) by default. 
 
 Right-click the tray icon and tick **Start with Windows**, or turn it on under **Settings** → Startup. It's off by default. It adds WattsLeft to your own startup apps only, not anyone else's on the PC.
 
-If you move WattsLeft's folder later, turn this off and on again so Windows starts it from the new place.
+If you move WattsLeft's folder later, start it once from the new place and it will follow: from then on, Windows starts it from there.
 
 ## Updating
 
