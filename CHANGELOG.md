@@ -11,10 +11,11 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-11-05
+
 ### Fixed
 
 - Start with Windows keeps working if you move WattsLeft's folder: the next time you start it from its new place, it points Windows there.
-
 - The first start no longer writes a needless "Couldn't delete status.json" line to the error log.
 
 ## [0.6.2] - 2026-10-25
@@ -146,7 +147,8 @@ Pre-releases (tags like v0.4.0-beta.1) use the Unreleased section.
 - Pop-ups when a controller connects or disconnects, and when its battery reaches 20% and 10%.
 - **Start with Windows**.
 
-[Unreleased]: https://github.com/veloxity343/WattsLeft/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/veloxity343/WattsLeft/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/veloxity343/WattsLeft/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/veloxity343/WattsLeft/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/veloxity343/WattsLeft/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/veloxity343/WattsLeft/compare/v0.5.0...v0.6.0
