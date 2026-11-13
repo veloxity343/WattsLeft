@@ -9,3 +9,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Avalonia's packages only work at the same version, so they're bumped together in one pull request.
+    groups:
+      avalonia:
+        patterns:
+          - "Avalonia*"
